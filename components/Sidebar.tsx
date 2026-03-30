@@ -1,0 +1,82 @@
+'use client'
+
+import { useRouter, usePathname } from 'next/navigation'
+import { LayoutDashboard, ClipboardCheck, FileText, DollarSign, TrendingUp, Users, Settings, ArrowLeft } from 'lucide-react'
+import { CaseData } from '@/lib/types'
+
+interface Props { caseData: CaseData }
+
+const NAV = [
+  { section: 'Main', items: [
+    { icon: LayoutDashboard, label: 'Dashboard',   href: '/dashboard', badge: null },
+    { icon: ClipboardCheck, label: 'Claim Audit',  href: '/claim-audit', badge: (d: CaseData) => d.totalFlagged > 0 ? String(d.totalFlagged) : null },
+    { icon: FileText,       label: 'Disputes',     href: '/dispute',   badge: (d: CaseData) => d.activeDisputes > 0 ? String(d.activeDisputes) : null },
+    { icon: DollarSign,     label: 'Recoveries',   href: '/dashboard', badge: null },
+  ]},
+  { section: 'Analytics', items: [
+    { icon: TrendingUp, label: 'RPS Reports', href: '/dashboard', badge: null },
+    { icon: Users,      label: 'Providers',   href: '/dashboard', badge: null },
+    { icon: Settings,   label: 'Settings',    href: '/dashboard', badge: null },
+  ]}
+]
+
+export default function Sidebar({ caseData }: Props) {
+  const router = useRouter()
+  const pathname = usePathname()
+
+  return (
+    <aside className="w-[240px] bg-[#0F1F3D] flex flex-col flex-shrink-0 sticky top-0 h-screen overflow-y-auto">
+      {/* Logo */}
+      <div className="px-5 py-5 border-b border-white/08">
+        <div className="font-display text-lg font-black text-white tracking-tight">
+          Bill<span className="text-[#0ABFBC]">Back</span> AI
+        </div>
+        <div className="text-[10px] uppercase tracking-[1.5px] text-white/25 mt-0.5">Payment Integrity</div>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 px-3 py-4">
+        {NAV.map(({ section, items }) => (
+          <div key={section}>
+            <div className="text-[10px] uppercase tracking-[1.5px] text-white/20 px-2 py-1.5 mt-2 mb-0.5">{section}</div>
+            {items.map(({ icon: Icon, label, href, badge }) => {
+              const isActive = pathname === href
+              const badgeVal = typeof badge === 'function' ? badge(caseData) : badge
+              return (
+                <button
+                  key={label}
+                  onClick={() => router.push(href)}
+                  className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] font-medium transition-all mb-0.5 ${
+                    isActive
+                      ? 'bg-[#0ABFBC]/14 text-[#0ABFBC]'
+                      : 'text-white/40 hover:bg-white/05 hover:text-white/75'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+                  {label}
+                  {badgeVal && (
+                    <span className="ml-auto bg-[#E53935] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                      {badgeVal}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        ))}
+      </nav>
+
+      {/* Footer */}
+      <div className="px-5 py-4 border-t border-white/08">
+        <button
+          onClick={() => router.push('/')}
+          className="flex items-center gap-2 text-white/25 hover:text-white/50 text-xs transition-colors mb-3"
+        >
+          <ArrowLeft className="w-3 h-3" /> New Bill
+        </button>
+        <div className="text-[12px] font-semibold text-white/50">{caseData.employer.name}</div>
+        <div className="text-[11px] text-white/25 mt-0.5">{caseData.employer.employees} ee · {caseData.employer.tpa}</div>
+      </div>
+    </aside>
+  )
+}
