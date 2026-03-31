@@ -2,6 +2,8 @@
 
 AI-powered medical billing audit and dispute recovery for self-insured employers.
 
+> **Branch note:** This is the `stable` branch — production-deployed version (v2, mobile-optimised). The `main` branch contains v3 (two-pass AI pipeline) which is under active development.
+
 ---
 
 ## What It Does
