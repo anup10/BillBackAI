@@ -308,3 +308,26 @@ Users can now dispute any line item on the bill — not just the ones the AI fla
 - Added train/test split documentation and `evaluateModel()` reference
 - Added Claim Audit page to project structure
 - Updated Step 1 class statistics description to reference 320 training records
+
+---
+
+### 9. Mobile Responsiveness
+Made the entire app responsive for mobile screens while leaving the desktop layout completely undisturbed. All mobile rules use Tailwind `md:` breakpoints as overrides so the desktop experience is pixel-identical to before.
+
+**Changes per file:**
+
+- **`components/Sidebar.tsx`** — Sidebar hidden on mobile (`hidden md:flex`). A fixed bottom navigation bar (`flex md:hidden`) replaces it with four icon+label tabs: Dashboard, Audit, Disputes, New Bill. Active route is highlighted in teal.
+
+- **`components/Topbar.tsx`** — Breadcrumb and Q1 period pill hidden on mobile. Case ID truncated. Buttons condensed (icon-only Copy/Download on small screens).
+
+- **`components/ClaimsTable.tsx`** — On mobile, the data table is replaced with a compact **card view** (`block sm:hidden`) showing CPT, description, overcharge, error badge, RPS badge, and a Dispute button per row. Desktop table (`hidden sm:block`) is unchanged.
+
+- **`components/KPICards.tsx`** — Already rendered in a `grid-cols-2` layout on mobile; no changes needed.
+
+- **`app/dashboard/page.tsx`** — Main padding reduced (`p-4 md:p-6`) and bottom padding added (`pb-20 md:pb-6`) to prevent content from hiding behind the mobile bottom nav.
+
+- **`app/claim-audit/page.tsx`** — Header condensed on mobile (back arrow only, patient info line hidden). Padding adjusted for bottom nav.
+
+- **`app/dispute/page.tsx`** — On mobile, a **tab bar** at the top switches between "Select Claims" and "Generate / View Letter" panels (stacked, full-width). On desktop the original side-by-side layout is preserved. Hover tooltip hidden on mobile (touch devices cannot hover). `DisputeLetter` component padding reduced on mobile (`px-6 py-8 md:px-14 md:py-12`).
+
+- **`app/page.tsx`** — Landing page was already responsive (marketing panel uses `hidden lg:flex`); no changes needed.

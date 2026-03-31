@@ -46,7 +46,7 @@ function BillBackStamp() {
 function DisputeLetter({ data }: { data: DisputeLetterData }) {
   const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
   return (
-    <div className="bg-white shadow-[0_4px_24px_rgba(0,0,0,0.08)] rounded-sm max-w-2xl mx-auto px-14 py-12 relative font-serif text-[#1a1a2e]">
+    <div className="bg-white shadow-[0_4px_24px_rgba(0,0,0,0.08)] rounded-sm max-w-2xl mx-auto px-6 py-8 md:px-14 md:py-12 relative font-serif text-[#1a1a2e]">
       <div className="absolute top-10 right-10"><BillBackStamp /></div>
       <p className="text-sm mb-8">{today}</p>
       <div className="text-sm mb-8 whitespace-pre-line leading-relaxed">{data.recipientBlock}</div>
@@ -89,6 +89,8 @@ export default function DisputePage() {
 
   const [hoveredClaimId, setHoveredClaimId] = useState<string | null>(null)
   const [showManual, setShowManual] = useState(false)
+  // Mobile: which tab is active
+  const [mobileTab, setMobileTab] = useState<'select' | 'letter'>('select')
 
   const [letterData, setLetterData] = useState<DisputeLetterData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -214,31 +216,51 @@ export default function DisputePage() {
       <div className="flex-1 flex flex-col min-w-0">
 
         {/* Topbar */}
-        <header className="bg-white border-b border-[#DDE6EF] px-6 py-3 flex items-center gap-3 sticky top-0 z-10">
+        <header className="bg-white border-b border-[#DDE6EF] px-4 md:px-6 py-3 flex items-center gap-2 md:gap-3 sticky top-0 z-10">
           <button
             onClick={() => router.push('/dashboard')}
-            className="flex items-center gap-2 bg-[#F0F4F8] border border-[#DDE6EF] text-[#0F1F3D] text-sm font-semibold px-3 py-1.5 rounded-lg hover:bg-[#E5EEF7] transition-colors"
+            className="flex items-center gap-1.5 bg-[#F0F4F8] border border-[#DDE6EF] text-[#0F1F3D] text-sm font-semibold px-2.5 md:px-3 py-1.5 rounded-lg hover:bg-[#E5EEF7] transition-colors flex-shrink-0"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
+            <ArrowLeft className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Dashboard</span>
           </button>
-          <div className="text-sm font-bold text-[#0F1F3D]">Dispute Letter Generator</div>
+          <div className="text-sm font-bold text-[#0F1F3D] truncate">Dispute Generator</div>
           <div className="ml-auto flex items-center gap-2">
             <button onClick={copyLetter} disabled={!letterData}
-              className="flex items-center gap-2 border border-[#DDE6EF] bg-white text-[#0F1F3D] text-sm font-semibold px-3 py-1.5 rounded-lg hover:bg-[#F0F4F8] disabled:opacity-40 transition-colors">
+              className="flex items-center gap-1.5 border border-[#DDE6EF] bg-white text-[#0F1F3D] text-xs md:text-sm font-semibold px-2.5 md:px-3 py-1.5 rounded-lg hover:bg-[#F0F4F8] disabled:opacity-40 transition-colors">
               <Copy className="w-3.5 h-3.5" />
-              {copied ? 'Copied!' : 'Copy'}
+              <span className="hidden sm:inline">{copied ? 'Copied!' : 'Copy'}</span>
             </button>
             <button onClick={downloadLetter} disabled={!letterData}
-              className="flex items-center gap-2 bg-[#0ABFBC] text-[#0F1F3D] text-sm font-bold px-4 py-1.5 rounded-lg hover:bg-[#07908E] disabled:opacity-40 transition-colors">
-              <Download className="w-3.5 h-3.5" /> Download
+              className="flex items-center gap-1.5 bg-[#0ABFBC] text-[#0F1F3D] text-xs md:text-sm font-bold px-3 md:px-4 py-1.5 rounded-lg hover:bg-[#07908E] disabled:opacity-40 transition-colors">
+              <Download className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Download</span>
             </button>
           </div>
         </header>
 
-        <main className="flex-1 flex gap-5 p-6 min-w-0">
+        <main className="flex-1 flex flex-col gap-4 p-4 md:flex-row md:gap-5 md:p-6 min-w-0 pb-20 md:pb-6">
+
+          {/* Mobile tab switcher */}
+          <div className="flex md:hidden bg-white border border-[#DDE6EF] rounded-xl p-1 gap-1">
+            <button
+              onClick={() => setMobileTab('select')}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                mobileTab === 'select' ? 'bg-[#0ABFBC] text-[#0F1F3D]' : 'text-[#6B82A0]'
+              }`}
+            >
+              Select Claims ({selectedClaims.size})
+            </button>
+            <button
+              onClick={() => setMobileTab('letter')}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                mobileTab === 'letter' ? 'bg-[#0ABFBC] text-[#0F1F3D]' : 'text-[#6B82A0]'
+              }`}
+            >
+              {letterData ? 'View Letter' : 'Generate'}
+            </button>
+          </div>
 
           {/* LEFT: Claim Selector */}
-          <div className="w-[310px] flex-shrink-0 flex flex-col gap-3">
+          <div className={`${mobileTab === 'letter' ? 'hidden md:flex' : 'flex'} md:w-[310px] flex-shrink-0 flex-col gap-3`}>
             <div className="bg-white border border-[#DDE6EF] rounded-xl overflow-visible">
 
               {/* ── Section 1: AI Flagged ── */}
@@ -293,9 +315,9 @@ export default function DisputePage() {
                         </div>
                       </button>
 
-                      {/* Hover tooltip */}
+                      {/* Hover tooltip — desktop only (positioned right of card) */}
                       {isHovered && claim.details && (
-                        <div className="absolute left-full ml-3 top-0 w-64 bg-[#0F1F3D] text-white text-xs p-3 rounded-xl z-50 shadow-xl pointer-events-none">
+                        <div className="hidden md:block absolute left-full ml-3 top-0 w-64 bg-[#0F1F3D] text-white text-xs p-3 rounded-xl z-50 shadow-xl pointer-events-none">
                           <div className="text-[10px] uppercase tracking-[1.5px] text-white/40 mb-1.5">Dispute Reason</div>
                           <p className="text-white/90 leading-relaxed">{claim.details}</p>
                         </div>
@@ -433,7 +455,7 @@ export default function DisputePage() {
           </div>
 
           {/* RIGHT: Letter */}
-          <div className="flex-1 flex flex-col min-w-0">
+          <div className={`${mobileTab === 'select' ? 'hidden md:flex' : 'flex'} flex-1 flex-col min-w-0`}>
             <div className="bg-[#E8EEF4] border border-[#DDE6EF] rounded-xl flex-1 flex flex-col overflow-hidden">
               <div className="px-5 py-3.5 border-b border-[#DDE6EF] bg-white flex items-center gap-3">
                 <h3 className="text-sm font-bold text-[#0F1F3D]">

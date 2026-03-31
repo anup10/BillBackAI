@@ -240,35 +240,35 @@ export default function ClaimAuditPage() {
       <div className="flex-1 flex flex-col min-w-0">
 
         {/* Header */}
-        <header className="bg-white border-b border-[#DDE6EF] px-6 py-3 flex items-center gap-3 sticky top-0 z-10">
+        <header className="bg-white border-b border-[#DDE6EF] px-4 md:px-6 py-3 flex items-center gap-2 md:gap-3 sticky top-0 z-10">
           <button
             onClick={() => router.push('/dashboard')}
-            className="flex items-center gap-2 bg-[#F0F4F8] border border-[#DDE6EF] text-[#0F1F3D] text-sm font-semibold px-3 py-1.5 rounded-lg hover:bg-[#E5EEF7] transition-colors"
+            className="flex items-center gap-1.5 bg-[#F0F4F8] border border-[#DDE6EF] text-[#0F1F3D] text-sm font-semibold px-2.5 md:px-3 py-1.5 rounded-lg hover:bg-[#E5EEF7] transition-colors flex-shrink-0"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Dashboard
+            <ArrowLeft className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Dashboard</span>
           </button>
-          <div>
+          <div className="min-w-0">
             <div className="text-sm font-bold text-[#0F1F3D]">Claim Audit</div>
-            <div className="text-[11px] text-[#6B82A0]">{caseData.patientName} · {caseData.dateOfService} · {caseData.facility}</div>
+            <div className="text-[11px] text-[#6B82A0] truncate hidden sm:block">{caseData.patientName} · {caseData.dateOfService} · {caseData.facility}</div>
           </div>
-          <div className="ml-auto flex items-center gap-4">
-            <div className="text-right">
+          <div className="ml-auto flex items-center gap-2 md:gap-4 flex-shrink-0">
+            <div className="text-right hidden sm:block">
               <div className="text-[10px] uppercase tracking-wide text-[#6B82A0]">Total Flagged</div>
               <div className="font-mono text-sm font-bold text-[#E53935]">${totalOvercharge.toLocaleString()}</div>
             </div>
             <button
               onClick={() => router.push('/dispute')}
-              className="flex items-center gap-2 bg-[#0ABFBC] text-[#0F1F3D] text-sm font-bold px-4 py-1.5 rounded-lg hover:bg-[#07908E] transition-colors"
+              className="flex items-center gap-1.5 bg-[#0ABFBC] text-[#0F1F3D] text-xs md:text-sm font-bold px-3 md:px-4 py-1.5 rounded-lg hover:bg-[#07908E] transition-colors"
             >
               <FileText className="w-3.5 h-3.5" /> Dispute All
             </button>
           </div>
         </header>
 
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 p-4 md:p-6 overflow-auto pb-20 md:pb-6">
 
           {/* Controls */}
-          <div className="flex items-center gap-3 mb-5 flex-wrap">
+          <div className="flex items-center gap-2 md:gap-3 mb-5 flex-wrap">
             {/* Filter tabs */}
             <div className="flex bg-white border border-[#DDE6EF] rounded-lg p-1 gap-0.5">
               {([

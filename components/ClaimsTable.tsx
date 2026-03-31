@@ -44,18 +44,62 @@ export default function ClaimsTable({ caseData, onDispute }: Props) {
   return (
     <div className="bg-white border border-[#DDE6EF] rounded-xl overflow-hidden">
       {/* Header */}
-      <div className="px-5 py-3.5 border-b border-[#DDE6EF] flex items-center gap-3">
-        <h3 className="text-sm font-bold text-[#0F1F3D]">
+      <div className="px-4 md:px-5 py-3.5 border-b border-[#DDE6EF] flex items-center gap-3">
+        <h3 className="text-sm font-bold text-[#0F1F3D] truncate">
           Flagged Overcharges: Case #{caseData.caseId}
         </h3>
-        <span className="bg-[#0ABFBC]/10 text-[#07908E] text-[11px] font-bold px-2 py-0.5 rounded-md">
+        <span className="bg-[#0ABFBC]/10 text-[#07908E] text-[11px] font-bold px-2 py-0.5 rounded-md flex-shrink-0">
           {flagged.length} Active
         </span>
-        <span className="ml-auto text-xs text-[#6B82A0]">All Error Types</span>
+        <span className="ml-auto text-xs text-[#6B82A0] hidden sm:block">All Error Types</span>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
+      {/* Mobile card view */}
+      <div className="block sm:hidden divide-y divide-[#F0F4F8]">
+        {caseData.claims.map((claim) => (
+          <div key={claim.id} className="px-4 py-3">
+            <div className="flex items-start justify-between gap-2 mb-1.5">
+              <div>
+                <span className="font-mono text-sm font-bold text-[#0F1F3D]">{claim.cpt}</span>
+                <p className="text-[11px] text-[#6B82A0] mt-0.5 leading-snug">{claim.desc}</p>
+              </div>
+              {claim.overcharge > 0
+                ? <span className="font-mono text-sm font-bold text-[#E53935] flex-shrink-0">${claim.overcharge.toLocaleString()}</span>
+                : <span className="font-mono text-xs text-[#6B82A0] flex-shrink-0">$0</span>
+              }
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <ErrorBadge error={claim.error} errorClass={claim.errorClass} />
+              {claim.rps && <RPSBadge rps={claim.rps} rpsClass={claim.rpsClass} />}
+              {claim.letterContext && (
+                <button
+                  onClick={() => onDispute(claim.id)}
+                  className="ml-auto bg-[#0ABFBC]/10 text-[#07908E] border border-[#0ABFBC]/25 text-[11px] font-bold px-2.5 py-1 rounded-md"
+                >
+                  Dispute →
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+        {totalOvercharge > 0 && (
+          <div className="px-4 py-3 bg-[#F0F7FF] flex items-center justify-between">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-[#6B82A0]">Total Overcharge</div>
+              <div className="font-mono text-base font-bold text-[#E53935]">${totalOvercharge.toLocaleString()}</div>
+            </div>
+            <button
+              onClick={() => onDispute(caseData.claims.find(c => c.letterContext)?.id ?? '')}
+              className="bg-[#0ABFBC] text-[#0F1F3D] text-[11px] font-bold px-3 py-1.5 rounded-md hover:bg-[#07908E] transition-colors"
+            >
+              Dispute All →
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Desktop table view */}
+      <div className="hidden sm:block overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="bg-[#F8FAFC] border-b border-[#DDE6EF]">

@@ -47,7 +47,7 @@ export default function DashboardPage() {
       <Sidebar caseData={caseData} />
       <div className="flex-1 flex flex-col min-w-0">
         <Topbar caseData={caseData} onFileDispute={() => router.push('/dispute')} />
-        <main className="flex-1 p-6 overflow-auto">
+        <main className="flex-1 p-4 md:p-6 overflow-auto pb-20 md:pb-6">
           <KPICards caseData={caseData} />
           <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 mt-5">
             <div className="flex flex-col gap-5">
