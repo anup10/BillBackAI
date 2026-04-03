@@ -71,6 +71,7 @@ CONFIDENCE AND AMBIGUITY RULES:
 - When ambiguous is true or claudeConfidence is "low", still return your best classification but the system will route this to human review
 - If you cannot find specific evidence in the bill to support an error classification, set errorClass to "none" — do NOT fabricate guideline citations
 - Be specific in details. Only cite NCCI edits, AMA guidelines, or benchmarks you are certain apply. If unsure of the exact edit number, describe the rule in general terms rather than inventing a specific citation.
+- IMPORTANT: Only include line items that have a valid CPT code. Do NOT include rows where the CPT code is missing, blank, or cannot be determined from the document.
 - Return ONLY the JSON object`
 
 export async function parseBillFromBase64(
@@ -125,7 +126,7 @@ export async function parseBillFromText(
 }
 
 function buildCaseData(parsed: Record<string, unknown>, employerId: string): CaseData {
-  const rawClaims = (parsed.claims as Claim[]).map((c: Claim) => ({
+  const rawClaims = (parsed.claims as Claim[]).filter((c: Claim) => c.cpt && String(c.cpt).trim() !== '').map((c: Claim) => ({
     ...c,
     id: uuid(),
     // Normalise Claude's self-reported confidence/ambiguity fields
@@ -239,4 +240,139 @@ IMPORTANT RULES:
   // Strip any accidental code fences Claude may emit
   const json = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
   return JSON.parse(json) as import('./types').DisputeLetterData
+}
+
+// ── Parse-only (extract line items, no error classification) ─────────────
+
+const PARSE_ONLY_SYSTEM = `You are a medical billing data extraction AI for BillBack AI.
+
+Extract every line item from the provided medical bill or EOB document. Do NOT classify errors, assess overcharges, or determine allowable amounts — only extract the raw billing data as it appears on the document.
+
+Return ONLY a valid JSON object (no markdown, no explanation):
+{
+  "patientName": "Full Name",
+  "dateOfService": "Month DD, YYYY",
+  "facility": "Facility Name",
+  "claims": [
+    {
+      "cpt": "99215",
+      "desc": "Service description",
+      "provider": "Provider Name",
+      "date": "Feb 14, 2024",
+      "billed": 425,
+      "units": 1
+    }
+  ]
+}
+
+RULES:
+- Only include line items that have a valid CPT code. Do NOT include rows where CPT is missing or blank.
+- Extract billed amounts exactly as they appear — do not modify them.
+- Do not infer, calculate, or estimate allowable amounts.
+- Omit the units field if not shown on the bill.
+- Return ONLY the JSON object`
+
+const CLASSIFY_SYSTEM = `You are a medical billing audit AI for BillBack AI, a payment integrity platform for self-insured employers.
+
+You will receive already-extracted and user-verified medical bill line items. Classify each for billing errors and determine the commercially allowable amount.
+
+Error types:
+- Upcoding: Code billed at higher complexity than clinically documented
+- Duplicate Charge: Same CPT billed more than once on same date by same provider
+- Unbundling: Component billed separately when included in a comprehensive code per NCCI edits
+- Fee Schedule Violation: Amount substantially exceeds commercial market rates
+- None: No error detected
+
+Return all original claim fields PLUS these classification fields for each claim:
+- error: one of "Upcoding", "Duplicate Charge", "Unbundling", "Fee Schedule Violation", "None"
+- errorClass: one of "upcoding", "duplicate", "unbundling", "fee-schedule", "none"
+- allowable: 80th percentile COMMERCIAL rate (never Medicare/CMS)
+- overcharge: billed - allowable (0 for clean claims)
+- details: specific explanation citing the rule or guideline violated
+- letterContext: text for dispute letter (null for clean claims)
+- claudeConfidence: "high", "medium", or "low"
+- ambiguous: true if cannot definitively classify, otherwise false
+
+CRITICAL RULES:
+- Never use Medicare or CMS rates — use 80th percentile COMMERCIAL rates
+- For unbundling: allowable = 0
+- For duplicates: allowable = 0 for the duplicate line
+- For clean claims: overcharge = 0, letterContext = null
+
+Return ONLY a valid JSON object (no markdown):
+{
+  "activeDisputes": 0,
+  "claims": [...all claims with original fields + classification fields...],
+  "activity": [
+    {
+      "type": "teal",
+      "text": "<strong>Bill audited</strong> — AI error classification complete.",
+      "amount": null,
+      "ts": "Just now"
+    }
+  ]
+}`
+
+interface RawParsedBill {
+  patientName: string
+  dateOfService: string
+  facility: string
+  claims: Array<{ cpt: string; desc: string; provider: string; date: string; billed: number; units?: number }>
+}
+
+export async function parseBillOnly(base64: string, mediaType: string): Promise<RawParsedBill> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 2000,
+    temperature: 0,
+    system: PARSE_ONLY_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif', data: base64 } },
+        { type: 'text', text: 'Extract all line items from this medical bill.' }
+      ]
+    }]
+  })
+  const text = response.content[0].type === 'text' ? response.content[0].text : ''
+  const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as RawParsedBill
+  parsed.claims = (parsed.claims || []).filter(c => c.cpt && String(c.cpt).trim() !== '')
+  return parsed
+}
+
+export async function parseBillOnlyFromText(content: string): Promise<RawParsedBill> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 2000,
+    temperature: 0,
+    system: PARSE_ONLY_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Extract all line items from this medical bill:\n\n${content.slice(0, 8000)}`
+    }]
+  })
+  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
+  const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim()) as RawParsedBill
+  parsed.claims = (parsed.claims || []).filter(c => c.cpt && String(c.cpt).trim() !== '')
+  return parsed
+}
+
+export async function classifyAndBuildCase(
+  rawClaims: Array<{ cpt: string; desc: string; provider: string; date: string; billed: number; units?: number }>,
+  meta: { patientName: string; dateOfService: string; facility: string },
+  employerId: string
+): Promise<CaseData> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 4000,
+    temperature: 0,
+    system: CLASSIFY_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Classify these medical bill line items for billing errors:\n\n${JSON.stringify(rawClaims, null, 2)}`
+    }]
+  })
+  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
+  const classified = JSON.parse(raw.replace(/```json|```/g, '').trim())
+  return buildCaseData({ ...classified, ...meta }, employerId)
 }

@@ -9,10 +9,12 @@ import KPICards from '@/components/KPICards'
 import ClaimsTable from '@/components/ClaimsTable'
 import RPSPanel from '@/components/RPSPanel'
 import ActivityFeed from '@/components/ActivityFeed'
+import BillPreviewPanel from '@/components/BillPreviewPanel'
 
 export default function DashboardPage() {
   const router = useRouter()
   const [caseData, setCaseData] = useState<CaseData | null>(null)
+  const [billImage, setBillImage] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -20,11 +22,17 @@ export default function DashboardPage() {
     if (!stored) { router.push('/'); return }
     try {
       setCaseData(JSON.parse(stored))
+      setBillImage(sessionStorage.getItem('billback_bill_image'))
       setReady(true)
     } catch {
       router.push('/')
     }
   }, [router])
+
+  const handleCaseUpdate = (updated: CaseData) => {
+    setCaseData(updated)
+    sessionStorage.setItem('billback_case', JSON.stringify(updated))
+  }
 
   const openDispute = (claimId: string) => {
     sessionStorage.setItem('billback_dispute_claim', claimId)
@@ -51,6 +59,7 @@ export default function DashboardPage() {
           <KPICards caseData={caseData} />
           <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-5 mt-5">
             <div className="flex flex-col gap-5">
+              <BillPreviewPanel caseData={caseData} billImage={billImage} onUpdate={handleCaseUpdate} />
               <ClaimsTable caseData={caseData} onDispute={openDispute} />
               <ActivityFeed caseData={caseData} />
             </div>
