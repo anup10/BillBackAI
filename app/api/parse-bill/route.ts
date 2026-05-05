@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { parseBillFromBase64, parseBillFromText } from '@/lib/claude'
+import { parseBillFromBase64, parseBillFromText, parseBillOnly, parseBillOnlyFromText } from '@/lib/claude'
 import { DEMO_CASES } from '@/lib/demo-data'
 
 export const maxDuration = 60
@@ -9,30 +9,37 @@ export async function POST(req: NextRequest) {
     const body = await req.json()
     const { type, employerId } = body
 
-    // Demo mode
     if (type === 'demo') {
       const id = employerId as keyof typeof DEMO_CASES
       const data = DEMO_CASES[id] || DEMO_CASES['meridian']
-      await new Promise(r => setTimeout(r, 800)) // simulate processing
+      await new Promise(r => setTimeout(r, 800))
       return NextResponse.json({ success: true, data })
     }
 
-    // Real PDF/image upload
+    if (type === 'parse-only') {
+      const { base64, mediaType } = body
+      if (!base64 || !mediaType) return NextResponse.json({ success: false, error: 'Missing file data' }, { status: 400 })
+      const data = await parseBillOnly(base64, mediaType)
+      return NextResponse.json({ success: true, data })
+    }
+
+    if (type === 'parse-only-text') {
+      const { content } = body
+      if (!content) return NextResponse.json({ success: false, error: 'Missing content' }, { status: 400 })
+      const data = await parseBillOnlyFromText(content)
+      return NextResponse.json({ success: true, data })
+    }
+
     if (type === 'image') {
       const { base64, mediaType } = body
-      if (!base64 || !mediaType) {
-        return NextResponse.json({ success: false, error: 'Missing file data' }, { status: 400 })
-      }
+      if (!base64 || !mediaType) return NextResponse.json({ success: false, error: 'Missing file data' }, { status: 400 })
       const data = await parseBillFromBase64(base64, mediaType, employerId || 'uploaded')
       return NextResponse.json({ success: true, data })
     }
 
-    // Text/CSV
     if (type === 'text') {
       const { content } = body
-      if (!content) {
-        return NextResponse.json({ success: false, error: 'Missing content' }, { status: 400 })
-      }
+      if (!content) return NextResponse.json({ success: false, error: 'Missing content' }, { status: 400 })
       const data = await parseBillFromText(content, employerId || 'uploaded')
       return NextResponse.json({ success: true, data })
     }

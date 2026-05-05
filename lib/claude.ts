@@ -1,198 +1,136 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { CaseData, Claim, RawLineItem, RawBillExtraction, ClassifiedLineItem } from './types'
+import { CaseData, Claim } from './types'
 import { applyRPSScoring, computeWeightedRPS } from './rps'
 import { v4 as uuid } from 'uuid'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-// ── PASS 1 ─────────────────────────────────────────────────────────────────────
-// Pure data extraction — reads the document and returns raw line items only.
-// No error classification happens here. This pass is near-deterministic because
-// it is purely transcribing numbers, codes, and text already on the page.
+const PARSE_SYSTEM = `You are a medical billing audit AI for BillBack AI, a payment integrity platform for self-insured employers.
 
-const PASS1_SYSTEM = `You are a medical bill data extraction system for BillBack AI.
+Analyze the provided medical bill or EOB document and extract every line item. For each line item, determine if a billing error exists.
 
-Your ONLY job is to extract raw line item data exactly as it appears in the document. Do NOT classify errors, flag overcharges, or make any clinical judgement.
+Error types to detect:
+- Upcoding: Code billed at higher complexity/level than clinically documented
+- Duplicate Charge: Same CPT code billed more than once on same date by same provider
+- Unbundling: A Column 2 component procedure was billed separately when its work is already included in the Column 1 comprehensive code billed on the same date per NCCI PTP edits. ALWAYS flag the Column 2 (component) code — never the Column 1 (comprehensive) code. The Column 1 code is legitimate and must not be touched.
+- Fee Schedule Violation: Amount billed substantially exceeds commercial market rates
+- None: No error detected
 
 Return ONLY a valid JSON object with this exact structure (no markdown, no explanation):
 {
   "patientName": "Full Name",
   "dateOfService": "Month DD, YYYY",
-  "facility": "Facility or Hospital Name",
-  "lineItems": [
+  "facility": "Facility Name",
+  "totalAudited": 10,
+  "claims": [
     {
       "cpt": "99215",
-      "desc": "Exact description of the service as written on the bill",
-      "provider": "Provider or physician name",
+      "desc": "Service description",
+      "error": "Upcoding",
+      "errorClass": "upcoding",
+      "provider": "Provider Name",
       "date": "Feb 14, 2024",
       "billed": 425,
-      "icd10": "Z00.00",
-      "units": 1
+      "allowable": 211,
+      "overcharge": 214,
+      "details": "Specific explanation of why this is an error, citing the specific guideline or rule violated (e.g. NCCI edit number, AMA CPT E/M guideline section, or Fair Health commercial benchmark). Format: [Evidence from bill] → [Guideline violated] → [Why this constitutes an error].",
+      "letterContext": "description of error for use in formal dispute letter",
+      "claudeConfidence": "high",
+      "ambiguous": false
     }
   ]
 }
 
-RULES:
-- Extract every line item on the bill, including lines that appear correct
-- billed must be a number (no $ sign, no commas)
-- units defaults to 1 if not shown
-- icd10 may be omitted if not present on the bill
-- Do NOT add errorClass, allowable, overcharge, or any classification field
-- Do NOT skip or merge line items — every row on the bill must appear in lineItems
+CRITICAL RULES FOR ALLOWABLE AMOUNTS:
+- This platform serves self-insured EMPLOYER plans, NOT Medicare/Medicaid
+- Never use Medicare or CMS rates as the allowable amount benchmark
+- Use the 80th percentile of COMMERCIAL rates for the geographic region
+- Commercial rates are typically 130-200% of Medicare rates depending on CPT code and region
+- For fee schedule violations: allowable = fair commercial market rate, not Medicare rate
+- For upcoding: allowable = commercial rate for the correct lower-level code
+- For unbundling: allowable = 0 on the Column 2 (component) code only — never on the Column 1 (comprehensive) code
+- For duplicates: allowable = 0 for the duplicate line (original charge stands)
+- errorClass must be exactly one of: upcoding, duplicate, unbundling, fee-schedule, none
+- For clean claims: set overcharge to 0, letterContext to null, claudeConfidence to "high", ambiguous to false
+
+CONFIDENCE AND AMBIGUITY RULES:
+- claudeConfidence must be exactly one of: "high", "medium", "low"
+  - "high": clear-cut error with direct evidence in the bill (e.g. exact duplicate line, specific NCCI edit applies)
+  - "medium": likely error but requires chart review or additional documentation to confirm
+  - "low": possible error but provider may have legitimate justification (e.g. modifier applies, documentation ambiguous)
+- ambiguous: set to true if you cannot definitively classify the error from the bill alone, or if the error type is debatable
+- When ambiguous is true or claudeConfidence is "low", still return your best classification but the system will route this to human review
+- If you cannot find specific evidence in the bill to support an error classification, set errorClass to "none" — do NOT fabricate guideline citations
+- Be specific in details. Only cite NCCI edits, AMA guidelines, or benchmarks you are certain apply. If unsure of the exact edit number, describe the rule in general terms rather than inventing a specific citation.
+- IMPORTANT: Only include line items that have a valid CPT code. Do NOT include rows where the CPT code is missing, blank, or cannot be determined from the document.
 - Return ONLY the JSON object`
 
-// ── PASS 2 ─────────────────────────────────────────────────────────────────────
-// Error classification — takes the structured line items from Pass 1 and
-// applies medical billing audit rules to each one independently.
-// Separating this from extraction means: (a) classification can be re-run
-// without re-parsing the document, (b) variance is isolated to this step only.
-
-const PASS2_SYSTEM = `You are a medical billing audit AI for BillBack AI, a payment integrity platform for self-insured employers.
-
-You will receive a JSON array of line items already extracted from a medical bill. Your job is to classify each line item for billing errors.
-
-Error types to detect:
-- Upcoding: Code billed at higher complexity/level than clinically documented
-- Duplicate Charge: Same CPT code billed more than once on same date by same provider
-- Unbundling: Component procedure billed separately when included in a comprehensive code per NCCI edits
-- Fee Schedule Violation: Amount billed substantially exceeds commercial market rates
-- None: No error detected
-
-Return ONLY a valid JSON array — one object per input line item, in the same order (no markdown, no explanation):
-[
-  {
-    "cpt": "99215",
-    "error": "Upcoding",
-    "errorClass": "upcoding",
-    "allowable": 211,
-    "overcharge": 214,
-    "details": "Specific explanation citing the guideline or rule violated. Format: [Evidence from bill] → [Guideline violated] → [Why this constitutes an error].",
-    "letterContext": "Description of error for use in a formal dispute letter, or null if no error",
-    "claudeConfidence": "high",
-    "ambiguous": false
+function buildFileBlock(base64: string, mediaType: string) {
+  if (mediaType === 'application/pdf') {
+    return { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: base64 } }
   }
-]
-
-CRITICAL RULES FOR ALLOWABLE AMOUNTS:
-- This platform serves self-insured EMPLOYER plans — never use Medicare/CMS rates
-- Use the 80th percentile of COMMERCIAL rates for the geographic region
-- For fee schedule violations: allowable = fair commercial market rate
-- For upcoding: allowable = commercial rate for the correct lower-level code
-- For unbundling: allowable = 0 (component code should not be billed at all)
-- For duplicates: allowable = 0 for the duplicate line
-- For clean claims (errorClass: none): overcharge = 0, letterContext = null
-
-DECISION RULES (apply in this order to reduce ambiguity):
-- If the identical CPT code appears twice on the same date from the same provider → ALWAYS Duplicate Charge
-- If billed > 150% of commercial rate AND provider is in-network → ALWAYS Fee Schedule Violation, not Upcoding
-- Use Upcoding ONLY when the E/M code complexity level is the clinical issue, not the dollar amount
-- Use Unbundling ONLY when a specific NCCI edit bundles the component code into a comprehensive code billed the same day
-
-CONFIDENCE AND AMBIGUITY:
-- claudeConfidence: "high" = clear-cut evidence in the bill | "medium" = likely but needs chart review | "low" = possible but provider may have justification
-- ambiguous: true if you cannot definitively classify from the bill alone
-- If unsure of a specific NCCI edit number, describe the rule generally — do not fabricate citation numbers
-- errorClass must be exactly one of: upcoding, duplicate, unbundling, fee-schedule, none`
-
-// ── Internal helpers ───────────────────────────────────────────────────────────
-
-async function runPass1Image(base64: string, mediaType: string): Promise<RawBillExtraction> {
-  const response = await client.messages.create({
-    model: 'claude-opus-4-5',
-    max_tokens: 2000,
-    temperature: 0,
-    system: PASS1_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: [
-        {
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif', data: base64 }
-        },
-        { type: 'text', text: 'Extract all line items from this medical bill and return the JSON.' }
-      ]
-    }]
-  })
-  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
-  return JSON.parse(raw.replace(/```json|```/g, '').trim()) as RawBillExtraction
+  return { type: 'image' as const, source: { type: 'base64' as const, media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif', data: base64 } }
 }
 
-async function runPass1Text(text: string): Promise<RawBillExtraction> {
-  const response = await client.messages.create({
-    model: 'claude-opus-4-5',
-    max_tokens: 2000,
-    temperature: 0,
-    system: PASS1_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: `Extract all line items from this medical bill data and return the JSON:\n\n${text.slice(0, 8000)}`
-    }]
-  })
-  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
-  return JSON.parse(raw.replace(/```json|```/g, '').trim()) as RawBillExtraction
-}
-
-async function runPass2(extraction: RawBillExtraction): Promise<ClassifiedLineItem[]> {
-  const response = await client.messages.create({
-    model: 'claude-opus-4-5',
-    max_tokens: 3000,
-    temperature: 0,
-    system: PASS2_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: `Classify each of these ${extraction.lineItems.length} line items for billing errors. Patient: ${extraction.patientName}, Facility: ${extraction.facility}, Date: ${extraction.dateOfService}.\n\nLine items:\n${JSON.stringify(extraction.lineItems, null, 2)}`
-    }]
-  })
-  const raw = response.content[0].type === 'text' ? response.content[0].text : '[]'
-  return JSON.parse(raw.replace(/```json|```/g, '').trim()) as ClassifiedLineItem[]
-}
-
-// Merges Pass 1 raw data + Pass 2 classifications into a full Claim array,
-// then runs RPS scoring on each claim.
-function buildCaseData(
-  extraction: RawBillExtraction,
-  classifications: ClassifiedLineItem[],
+export async function parseBillFromBase64(
+  base64: string,
+  mediaType: string,
   employerId: string
-): CaseData {
-  const rawClaims: Claim[] = extraction.lineItems.map((raw: RawLineItem, i: number) => {
-    const cls = classifications[i] ?? {
-      cpt: raw.cpt,
-      error: 'None' as const,
-      errorClass: 'none' as const,
-      allowable: raw.billed,
-      overcharge: 0,
-      details: '',
-      letterContext: null,
-      claudeConfidence: 'low' as const,
-      ambiguous: false,
-    }
-    return {
-      id: uuid(),
-      // Pass 1 fields
-      cpt: raw.cpt,
-      desc: raw.desc,
-      provider: raw.provider,
-      date: raw.date,
-      billed: raw.billed,
-      icd10: raw.icd10,
-      units: raw.units,
-      // Pass 2 fields
-      error: cls.error,
-      errorClass: cls.errorClass,
-      allowable: cls.allowable,
-      overcharge: cls.overcharge,
-      details: cls.details,
-      letterContext: cls.letterContext,
-      claudeConfidence: cls.claudeConfidence,
-      ambiguous: cls.ambiguous,
-      // RPS fields — populated by applyRPSScoring below
-      rps: null,
-      rpsClass: null,
-      confidence: null,
-      rationale: null,
-    }
+): Promise<CaseData> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 8000,
+    temperature: 0,
+    system: PARSE_SYSTEM,
+    messages: [{
+      role: 'user',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      content: [buildFileBlock(base64, mediaType) as any, { type: 'text', text: 'Analyze this medical bill and return the JSON audit result.' }]
+    }]
   })
 
+  const text = response.content[0].type === 'text' ? response.content[0].text : ''
+  const clean = text.replace(/```json|```/g, '').trim()
+  const parsed = JSON.parse(clean)
+
+  return buildCaseData(parsed, employerId)
+}
+
+export async function parseBillFromText(
+  text: string,
+  employerId: string
+): Promise<CaseData> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 8000,
+    temperature: 0,
+    system: PARSE_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Analyze this medical bill/claims data and return the JSON audit result:\n\n${text.slice(0, 8000)}`
+    }]
+  })
+
+  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
+  const clean = raw.replace(/```json|```/g, '').trim()
+  const parsed = JSON.parse(clean)
+
+  return buildCaseData(parsed, employerId)
+}
+
+function buildCaseData(parsed: Record<string, unknown>, employerId: string): CaseData {
+  const rawClaims = (parsed.claims as Claim[]).filter((c: Claim) => c.cpt && String(c.cpt).trim() !== '').map((c: Claim) => ({
+    ...c,
+    id: uuid(),
+    // Normalise Claude's self-reported confidence/ambiguity fields
+    claudeConfidence: c.claudeConfidence ?? null,
+    ambiguous: c.ambiguous ?? false,
+    // Clear any RPS fields — the scoring engine will populate them
+    rps: null,
+    rpsClass: null,
+    confidence: null,
+    rationale: null,
+  }))
   const claims = applyRPSScoring(rawClaims)
   const overcharge = claims.reduce((s, c) => s + (c.overcharge || 0), 0)
   const flagged = claims.filter(c => c.overcharge > 0)
@@ -201,49 +139,17 @@ function buildCaseData(
   return {
     caseId: `BB-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`,
     employer: { id: employerId, name: 'Uploaded Bill', employees: 'N/A', plan: 'Self-Insured', tpa: 'N/A' },
-    patientName: extraction.patientName || 'Unknown Patient',
-    dateOfService: extraction.dateOfService || 'Unknown Date',
-    facility: extraction.facility || 'Unknown Facility',
-    totalRecovered: 0,
+    patientName: (parsed.patientName as string) || 'Unknown Patient',
+    dateOfService: (parsed.dateOfService as string) || 'Unknown Date',
+    facility: (parsed.facility as string) || 'Unknown Facility',
     totalFlagged: flagged.length,
-    totalAudited: claims.length,
+    totalAudited: (parsed.totalAudited as number) || claims.length,
     overcharge,
-    activeDisputes: 0,
+    activeDisputes: flagged.length,
     weightedRPS,
     claims,
-    activity: [{
-      id: uuid(),
-      type: 'teal',
-      text: '<strong>Bill uploaded</strong> - AI audit initiated.',
-      amount: null,
-      ts: 'Just now'
-    }],
   }
 }
-
-// ── Public API ─────────────────────────────────────────────────────────────────
-
-export async function parseBillFromBase64(
-  base64: string,
-  mediaType: string,
-  employerId: string
-): Promise<CaseData> {
-  const extraction = await runPass1Image(base64, mediaType)
-  const classifications = await runPass2(extraction)
-  return buildCaseData(extraction, classifications, employerId)
-}
-
-export async function parseBillFromText(
-  text: string,
-  employerId: string
-): Promise<CaseData> {
-  const extraction = await runPass1Text(text)
-  const classifications = await runPass2(extraction)
-  return buildCaseData(extraction, classifications, employerId)
-}
-
-// ── Dispute letter generation ──────────────────────────────────────────────────
-// Unchanged — takes finalised Claim objects and generates the formal letter.
 
 export async function generateDisputeLetter(
   claims: Claim[],
@@ -256,7 +162,7 @@ export async function generateDisputeLetter(
   const getErrorInstruction = (claim: Claim): string => {
     const instructions: Record<string, string> = {
       duplicate: `Cite that CPT ${claim.cpt} was submitted twice on the same date of service by the same provider. Under standard medical billing guidelines, duplicate claim submissions are not payable. The second submission has no clinical or administrative justification and must be reversed.`,
-      unbundling: `Cite the NCCI (National Correct Coding Initiative) bundling edit that includes CPT ${claim.cpt} as a component procedure within the comprehensive code billed on the same date. Component codes cannot be billed separately when a comprehensive code covering the same service has been submitted. No modifier exception applies in this case.`,
+      unbundling: `Cite the NCCI (National Correct Coding Initiative) PTP bundling edit that designates CPT ${claim.cpt} as a Column 2 component procedure whose work is already included in the Column 1 comprehensive code billed on the same date of service. Under NCCI policy, Column 2 component codes cannot be billed separately when the corresponding Column 1 comprehensive code has been submitted by the same provider on the same date. No modifier exception applies in this case. The full billed amount of $${claim.billed} for CPT ${claim.cpt} must be reversed.`,
       upcoding: `Cite that the clinical documentation for this encounter does not support the medical decision-making complexity required for CPT ${claim.cpt} under AMA CPT Evaluation and Management guidelines. The documented visit complexity is consistent with a lower-level code. The billed amount of $${claim.billed} reflects a code level that is not supported by the medical record.`,
       'fee-schedule': `Cite that the billed amount of $${claim.billed} for CPT ${claim.cpt} substantially exceeds the 80th percentile of commercial reimbursement rates for this procedure in this geographic region, as benchmarked against Fair Health commercial data and the employer plan's reasonable and customary reimbursement threshold. Do NOT reference Medicare or CMS rates. This is a self-insured commercial employer plan.`,
       none: claim.details
@@ -281,7 +187,7 @@ DISPUTED LINE ITEM ${i + 1}:
 
   const response = await client.messages.create({
     model: 'claude-opus-4-5',
-    max_tokens: claims.length > 1 ? 2500 : 1500,
+    max_tokens: 4000,
     messages: [{
       role: 'user',
       content: `You are drafting a formal medical billing dispute letter for a self-insured employer. Return ONLY a valid JSON object — no markdown, no code fences, no commentary.
@@ -321,6 +227,179 @@ IMPORTANT RULES:
   })
 
   const raw = response.content[0].type === 'text' ? response.content[0].text : '{}'
+  // Strip any accidental code fences Claude may emit
   const json = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
   return JSON.parse(json) as import('./types').DisputeLetterData
+}
+
+// ── Parse-only (extract line items, no error classification) ─────────────
+
+const PARSE_ONLY_SYSTEM = `You are a medical billing data extraction AI for BillBack AI.
+
+Extract every line item from the provided medical bill or EOB document. Do NOT classify errors, assess overcharges, or determine allowable amounts — only extract the raw billing data as it appears on the document.
+
+Return ONLY a valid JSON object (no markdown, no explanation):
+{
+  "patientName": "Full Name",
+  "dateOfService": "Month DD, YYYY",
+  "facility": "Facility Name",
+  "claims": [
+    {
+      "cpt": "99215",
+      "desc": "Service description",
+      "provider": "Provider Name",
+      "date": "Feb 14, 2024",
+      "billed": 425,
+      "units": 1
+    }
+  ]
+}
+
+RULES:
+- Only include line items that have a valid CPT code. Do NOT include rows where CPT is missing or blank.
+- Extract billed amounts exactly as they appear — do not modify them.
+- Do not infer, calculate, or estimate allowable amounts.
+- Omit the units field if not shown on the bill.
+- Return ONLY the JSON object`
+
+const CLASSIFY_SYSTEM_BASE = `You are a medical billing audit AI for BillBack AI, a payment integrity platform for self-insured employers.
+
+You will receive already-extracted and user-verified medical bill line items. Classify each for billing errors and determine the commercially allowable amount.
+
+ERROR TYPES:
+- Upcoding: Code billed at higher complexity than clinically documented
+- Duplicate Charge: Same CPT billed more than once on same date by same provider
+- Unbundling: A Column 2 component procedure was billed separately when its work is already included in the Column 1 comprehensive code billed on the same date per NCCI PTP edits. ALWAYS flag the Column 2 (component) code — never the Column 1 (comprehensive) code. The Column 1 code is legitimate and must not be touched.
+- Fee Schedule Violation: Amount exceeds the 80th percentile commercial benchmark by more than 25%
+- None: No error detected
+
+ERROR PRIORITY (when a claim qualifies for multiple error types, apply the first that fits):
+  1. Duplicate Charge
+  2. Unbundling
+  3. Upcoding
+  4. Fee Schedule Violation
+
+MODIFIER RULES:
+- If a claim carries modifier 59 or XU, do not classify as unbundling unless you have specific evidence the modifier was applied inappropriately
+- If a claim carries modifier 25, do not flag the associated E/M as a duplicate of a procedure on the same date — modifier 25 indicates a separate, significant evaluation
+- If a claim carries modifier 51, do not flag as unbundling — modifier 51 indicates multiple procedures at the same session, which may be legitimate
+- When a modifier is present and you cannot confirm it is inappropriate, set claudeConfidence to "low" and ambiguous to true
+
+CONFIDENCE LEVELS:
+- "high": clear-cut error with direct evidence (e.g. exact duplicate line, specific NCCI edit applies, fee clearly exceeds benchmark)
+- "medium": likely error but requires chart review or additional documentation to confirm
+- "low": possible error but provider may have legitimate justification (modifier applies, documentation ambiguous)
+
+FEE SCHEDULE VIOLATION THRESHOLD:
+- Only flag as Fee Schedule Violation if the billed amount exceeds the 80th percentile COMMERCIAL rate by more than 25%
+- Use commercial rates only — never Medicare or CMS rates
+- If billed is within 25% of the commercial benchmark, classify as "None"
+
+Return all original claim fields PLUS these classification fields for each claim:
+- error: one of "Upcoding", "Duplicate Charge", "Unbundling", "Fee Schedule Violation", "None"
+- errorClass: one of "upcoding", "duplicate", "unbundling", "fee-schedule", "none"
+- allowable: 80th percentile COMMERCIAL rate (never Medicare/CMS)
+- overcharge: billed - allowable (0 for clean claims)
+- details: use this exact format: [Evidence from bill] → [Guideline violated] → [Why this constitutes an error]. If clinical notes were provided, cite specific documentation gaps or inconsistencies found in the notes.
+- letterContext: text for dispute letter (null for clean claims)
+- claudeConfidence: "high", "medium", or "low"
+- ambiguous: true if cannot definitively classify, otherwise false
+
+CRITICAL RULES:
+- Never use Medicare or CMS rates — use 80th percentile COMMERCIAL rates
+- For unbundling: allowable = 0 on the Column 2 (component) code only — its work is already compensated by the Column 1 comprehensive code. In the details field, explicitly state which code is Column 1 and which is Column 2, and name the NCCI edit or bundling rule that applies.
+- For duplicates: allowable = 0 for the duplicate line only (the original charge stands)
+- For clean claims: overcharge = 0, letterContext = null
+- If clinical notes are provided and directly contradict a billed code, set claudeConfidence to "high" and ambiguous to false
+- Do NOT fabricate guideline citations — if unsure of an exact edit number, describe the rule in general terms
+
+Return ONLY a valid JSON object (no markdown):
+{
+  "claims": [...all claims with original fields + classification fields...]
+}`
+
+function buildClassifySystem(clinicalNotes?: string): string {
+  if (!clinicalNotes || !clinicalNotes.trim()) return CLASSIFY_SYSTEM_BASE
+  const notesBlock = `
+CLINICAL DOCUMENTATION PROVIDED:
+The employer has attached clinical notes as a document. Use them as the authoritative record of what was documented and performed.
+
+Apply these notes when classifying:
+- Upcoding: Does the documented complexity (history, exam, MDM) actually support the billed E/M level? If the notes reflect a lower level of service, flag as upcoding.
+- Unbundling: Were component procedures described as part of a single encounter or comprehensive service? If so, flag separate billing as unbundling per NCCI edits.
+- Medical necessity: Are the billed services consistent with the documented clinical indication? Flag discrepancies in details.`
+  return CLASSIFY_SYSTEM_BASE.replace(
+    'Return all original claim fields',
+    `${notesBlock}\n\nReturn all original claim fields`
+  )
+}
+
+interface RawParsedBill {
+  patientName: string
+  dateOfService: string
+  facility: string
+  claims: Array<{ cpt: string; desc: string; provider: string; date: string; billed: number; units?: number }>
+}
+
+export async function parseBillOnly(base64: string, mediaType: string): Promise<RawParsedBill> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 2000,
+    temperature: 0,
+    system: PARSE_ONLY_SYSTEM,
+    messages: [{
+      role: 'user',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      content: [buildFileBlock(base64, mediaType) as any, { type: 'text', text: 'Extract all line items from this medical bill.' }]
+    }]
+  })
+  const text = response.content[0].type === 'text' ? response.content[0].text : ''
+  const parsed = JSON.parse(text.replace(/```json|```/g, '').trim()) as RawParsedBill
+  parsed.claims = (parsed.claims || []).filter(c => c.cpt && String(c.cpt).trim() !== '')
+  return parsed
+}
+
+export async function parseBillOnlyFromText(content: string): Promise<RawParsedBill> {
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 2000,
+    temperature: 0,
+    system: PARSE_ONLY_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `Extract all line items from this medical bill:\n\n${content.slice(0, 8000)}`
+    }]
+  })
+  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
+  const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim()) as RawParsedBill
+  parsed.claims = (parsed.claims || []).filter(c => c.cpt && String(c.cpt).trim() !== '')
+  return parsed
+}
+
+export async function classifyAndBuildCase(
+  rawClaims: Array<{ cpt: string; desc: string; provider: string; date: string; billed: number; units?: number }>,
+  meta: { patientName: string; dateOfService: string; facility: string },
+  employerId: string,
+  clinicalNotesDoc?: { base64: string; mediaType: string }
+): Promise<CaseData> {
+  const systemPrompt = clinicalNotesDoc ? buildClassifySystem('__see_attached_document__') : buildClassifySystem()
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const userContent: any[] = []
+  if (clinicalNotesDoc) {
+    userContent.push(buildFileBlock(clinicalNotesDoc.base64, clinicalNotesDoc.mediaType))
+    userContent.push({ type: 'text', text: 'The document above contains the clinical notes for this patient encounter. Use them when classifying the billing errors below.' })
+  }
+  userContent.push({ type: 'text', text: `Classify these medical bill line items for billing errors:\n\n${JSON.stringify(rawClaims, null, 2)}` })
+
+  const response = await client.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 8000,
+    temperature: 0,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userContent }]
+  })
+  const raw = response.content[0].type === 'text' ? response.content[0].text : ''
+  const classified = JSON.parse(raw.replace(/```json|```/g, '').trim())
+  return buildCaseData({ ...classified, ...meta }, employerId)
 }

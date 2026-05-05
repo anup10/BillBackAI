@@ -3,6 +3,7 @@
 import { useRouter, usePathname } from 'next/navigation'
 import { LayoutDashboard, ClipboardCheck, FileText, DollarSign, TrendingUp, Users, Settings, ArrowLeft } from 'lucide-react'
 import { CaseData } from '@/lib/types'
+import Logo from '@/components/Logo'
 
 interface Props { caseData: CaseData }
 
@@ -34,12 +35,10 @@ export default function Sidebar({ caseData }: Props) {
   return (
     <>
       {/* Desktop sidebar — hidden on mobile */}
-      <aside className="hidden md:flex w-[240px] bg-[#0F1F3D] flex-col flex-shrink-0 sticky top-0 h-screen overflow-y-auto">
+      <aside className="hidden md:flex w-[240px] bg-[#0D0F14] flex-col flex-shrink-0 sticky top-0 h-screen overflow-y-auto">
         {/* Logo */}
         <div className="px-5 py-5 border-b border-white/08">
-          <div className="font-display text-lg font-black text-white tracking-tight">
-            Bill<span className="text-[#0ABFBC]">Back</span> AI
-          </div>
+          <Logo variant="light" />
           <div className="text-[10px] uppercase tracking-[1.5px] text-white/25 mt-0.5">Payment Integrity</div>
         </div>
 
@@ -57,7 +56,7 @@ export default function Sidebar({ caseData }: Props) {
                     onClick={() => router.push(href)}
                     className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] font-medium transition-all mb-0.5 ${
                       isActive
-                        ? 'bg-[#0ABFBC]/14 text-[#0ABFBC]'
+                        ? 'bg-[#E8A020]/14 text-[#E8A020]'
                         : 'text-white/40 hover:bg-white/05 hover:text-white/75'
                     }`}
                   >
@@ -89,7 +88,7 @@ export default function Sidebar({ caseData }: Props) {
       </aside>
 
       {/* Mobile bottom nav — hidden on desktop */}
-      <nav className="flex md:hidden fixed bottom-0 left-0 right-0 bg-[#0F1F3D] border-t border-white/10 z-50 safe-area-bottom">
+      <nav className="flex md:hidden fixed bottom-0 left-0 right-0 bg-[#0D0F14] border-t border-white/10 z-50 safe-area-bottom">
         {BOTTOM_NAV.map(({ icon: Icon, label, href }) => {
           const isActive = pathname === href
           return (
@@ -97,7 +96,7 @@ export default function Sidebar({ caseData }: Props) {
               key={label}
               onClick={() => router.push(href)}
               className={`flex-1 flex flex-col items-center justify-center gap-1 py-2.5 transition-colors ${
-                isActive ? 'text-[#0ABFBC]' : 'text-white/40 active:text-white/70'
+                isActive ? 'text-[#E8A020]' : 'text-white/40 active:text-white/70'
               }`}
             >
               <Icon className="w-5 h-5" />
